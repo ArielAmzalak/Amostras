@@ -20,7 +20,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 # ╭─────────────────────────── CONFIGURAÇÕES ─────────────────────────────╮
 SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
-SPREADSHEET_ID = "SEU_ID_AQUI"
+SPREADSHEET_ID = "1VLDQUCO3Aw4ClAvhjkUsnBxG44BTjz-MjHK04OqPxYM"
 SHEET_NAME     = "Geral"
 # Colunas a atualizar (ajuste se necessário)
 STATUS_COL = "AF"
