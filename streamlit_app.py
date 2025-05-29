@@ -1,5 +1,5 @@
 # ────────────────────────────────────────────────────────────────────────────────
-# app.py – Seleciona amostras existentes e gera planilha Excel
+# app.py – Selecionar amostras no Google Sheets e gerar Excel
 # Execute com:  streamlit run app.py
 # ────────────────────────────────────────────────────────────────────────────────
 from __future__ import annotations
@@ -19,17 +19,17 @@ from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 # ╭─────────────────────────── CONFIGURAÇÕES ─────────────────────────────╮
-SCOPES        = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES         = ["https://www.googleapis.com/auth/spreadsheets"]
 SPREADSHEET_ID = "1VLDQUCO3Aw4ClAvhjkUsnBxG44BTjz-MjHK04OqPxYM"
 SHEET_NAME     = "Geral"
-# Colunas a atualizar (ajuste se necessário)
-STATUS_COL = "AF"
-DATE_COL   = "AG"
+
+STATUS_COL = "AF"                     # coluna que recebe "Analisando Amostra"
+DATE_COL   = "AG"                     # coluna que recebe a data de hoje
 STATUS_VAL = "Analisando Amostra"
 DATE_FMT   = "%d/%m/%Y"
 # ╰────────────────────────────────────────────────────────────────────────╯
 
-# ─────────────────────── Google Sheets helpers ──────────────────────────
+# ───────────────────────── Google Sheets helpers ────────────────────────
 @st.cache_resource
 def _authorize_google() -> Credentials:
     token_path = "token.json"
@@ -43,7 +43,7 @@ def _authorize_google() -> Credentials:
             try:
                 client_config = json.loads(st.secrets["GOOGLE_CLIENT_SECRET"])
             except Exception:
-                st.error("❌ Não encontrei credenciais do Google.")
+                st.error("❌ Credenciais do Google não encontradas.")
                 st.stop()
             flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_console()
@@ -61,7 +61,7 @@ def _get_service():
 
 
 def _col_to_index(col: str) -> int:
-    """Converte 'A'→0, 'B'→1 …"""
+    """Converte 'A' → 0, 'B' → 1, …"""
     idx = 0
     for c in col:
         idx = idx * 26 + (ord(c.upper()) - 64)
@@ -69,44 +69,48 @@ def _col_to_index(col: str) -> int:
 
 
 def fetch_sheet() -> List[List[str]]:
+    """Lê a aba inteira, forçando tudo como texto."""
     res = (
         _get_service()
         .spreadsheets()
         .values()
-        .get(spreadsheetId=SPREADSHEET_ID, range=f"{SHEET_NAME}")
+        .get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=SHEET_NAME,
+            valueRenderOption="FORMATTED_VALUE",  # <- devolve sempre string
+        )
         .execute()
     )
     return res.get("values", [])
 
 
-def update_status(rows_idx: List[int], date_today: str) -> None:
-    """Atualiza colunas STATUS_COL e DATE_COL nas linhas indicadas (1-based)."""
+def update_status(rows_idx: List[int], today: str) -> None:
+    """Atualiza colunas de STATUS e DATA nas linhas indicadas (1-based)."""
     svc = _get_service()
     status_range = f"{SHEET_NAME}!{STATUS_COL}{rows_idx[0]}:{STATUS_COL}{rows_idx[-1]}"
     date_range   = f"{SHEET_NAME}!{DATE_COL}{rows_idx[0]}:{DATE_COL}{rows_idx[-1]}"
-    # Prepara valores nas mesmas dimensões
-    status_body = {"values": [[STATUS_VAL]] * len(rows_idx)}
-    date_body   = {"values": [[date_today]]  * len(rows_idx)}
+    body_status = {"values": [[STATUS_VAL]] * len(rows_idx)}
+    body_date   = {"values": [[today]]      * len(rows_idx)}
+
     try:
         svc.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=status_range,
             valueInputOption="RAW",
-            body=status_body,
+            body=body_status,
         ).execute()
         svc.spreadsheets().values().update(
             spreadsheetId=SPREADSHEET_ID,
             range=date_range,
             valueInputOption="RAW",
-            body=date_body,
+            body=body_date,
         ).execute()
     except HttpError as exc:
-        st.error("❌ Falha ao atualizar status no Sheets.")
+        st.error("❌ Falha ao atualizar status no Google Sheets.")
         st.stop()
 
-
 # ───────────────────────────── UI Streamlit ─────────────────────────────
-st.set_page_config(page_title="Selecionar Amostras", page_icon="🧾", layout="centered")
+st.set_page_config(page_title="Selecionar Amostras", page_icon="🛢️", layout="centered")
 st.title("Selecionar Amostras 🛢️")
 
 if "samples" not in st.session_state:
@@ -118,64 +122,70 @@ def _add_sample():
     code = st.session_state["current_input"].strip()
     if code and code not in st.session_state["samples"]:
         st.session_state["samples"].append(code)
-    st.session_state["current_input"] = ""  # limpa campo
+    st.session_state["current_input"] = ""   # limpa campo após Enter
 
-# Campo de leitura (cada Enter aciona on_change)
 st.text_input(
-    "📷 Escaneie o código de barras da amostra e pressione Enter",
+    "📷 Escaneie o código de barras e pressione Enter",
     key="current_input",
     on_change=_add_sample,
 )
 
-# Lista de amostras lidas
-st.write("### Amostras selecionadas")
-st.write(", ".join(st.session_state["samples"]) or "Nenhuma ainda.")
+st.write("### Amostras pré-selecionadas")
+st.write(", ".join(st.session_state["samples"]) or "Nenhuma.")
 
-# Botões auxiliares
 col1, col2 = st.columns(2)
 with col1:
     if st.button("🗑️ Limpar lista"):
         st.session_state["samples"].clear()
 with col2:
-    gen = st.button("📥 Gerar planilha")
+    gerar = st.button("📥 Gerar planilha")
 
-# ─────────────────── Geração do Excel e download ────────────────────────
-if gen and st.session_state["samples"]:
-    with st.spinner("Buscando dados no Google Sheets..."):
-        all_rows = fetch_sheet()
-        if not all_rows:
-            st.error("Planilha vazia ou aba não encontrada.")
+# ───────────────────── Geração da planilha Excel ────────────────────────
+if gerar and st.session_state["samples"]:
+    with st.spinner("Consultando Google Sheets…"):
+        sheet_rows = fetch_sheet()
+        if not sheet_rows:
+            st.error("Aba vazia ou não encontrada.")
             st.stop()
 
-        header, *data = all_rows
-        g_col_idx = _col_to_index("G")
-        selected_rows, idx_numbers = [], []  # dados + índice 1-based
-        for i, row in enumerate(data, start=2):  # linha 2 em diante
-            sample_no = row[g_col_idx] if g_col_idx < len(row) else ""
-            if sample_no in st.session_state["samples"]:
+        header, *data = sheet_rows
+        g_idx = _col_to_index("G")
+        selected_rows, lines_idx = [], []
+        samples_set = {s.strip() for s in st.session_state["samples"]}
+
+        for i, row in enumerate(data, start=2):              # 1-based (linha 1 = header)
+            sample_text = str(row[g_idx]).strip() if g_idx < len(row) else ""
+            if sample_text in samples_set:
                 selected_rows.append(row)
-                idx_numbers.append(i)
+                lines_idx.append(i)
 
         if not selected_rows:
-            st.warning("Nenhuma amostra encontrada na planilha.")
+            st.warning("Nenhuma amostra da lista foi encontrada na planilha.")
             st.stop()
 
     today = datetime.now().strftime(DATE_FMT)
-    with st.spinner("Atualizando status no Sheets..."):
-        update_status(idx_numbers, today)
+    with st.spinner("Atualizando status no Sheets…"):
+        update_status(lines_idx, today)
 
-    with st.spinner("Gerando arquivo Excel..."):
-        df = pd.DataFrame(selected_rows, columns=header)
+    with st.spinner("Gerando arquivo Excel…"):
+        # Preenche linhas curtas até o tamanho do cabeçalho
+        norm_rows = [
+            r + [""] * (len(header) - len(r))
+            for r in selected_rows
+        ]
+        df = pd.DataFrame(norm_rows, columns=header)
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
             df.to_excel(writer, index=False, sheet_name="Amostras")
         buf.seek(0)
-    st.success(f"✔️ {len(selected_rows)} amostra(s) exportada(s).")
+
+    st.success(f"✔️ {len(df)} amostra(s) exportada(s).")
     st.download_button(
         "⬇️ Baixar Excel",
         data=buf,
         file_name=f"amostras_{today}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-elif gen:
+
+elif gerar:
     st.error("📋 A lista de amostras está vazia.")
